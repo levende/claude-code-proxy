@@ -95,6 +95,9 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
+# Get auth token for proxy access (optional)
+PROXY_AUTH_TOKEN = os.environ.get("PROXY_AUTH_TOKEN")
+
 # Get model mapping configuration from environment
 # Default to latest OpenAI models if not set
 BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
@@ -355,17 +358,43 @@ class MessagesResponse(BaseModel):
     usage: Usage
 
 @app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    # Skip auth for health check
+    if request.url.path == "/":
+        return await call_next(request)
+
+    if PROXY_AUTH_TOKEN:
+        # Support both Bearer token and Anthropic-style x-api-key header
+        auth_header = request.headers.get("authorization", "")
+        api_key_header = request.headers.get("x-api-key", "")
+
+        token = None
+        if auth_header.startswith("Bearer "):
+            token = auth_header[len("Bearer "):]
+        elif api_key_header:
+            token = api_key_header
+
+        if not token or token != PROXY_AUTH_TOKEN:
+            return JSONResponse(
+                status_code=403 if token else 401,
+                content={"error": "Unauthorized. Valid token required."}
+            )
+
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def log_requests(request: Request, call_next):
     # Get request details
     method = request.method
     path = request.url.path
-    
+
     # Log only basic request details at debug level
     logger.debug(f"Request: {method} {path}")
-    
+
     # Process the request and get the response
     response = await call_next(request)
-    
+
     return response
 
 # Not using validation function as we're using the environment API key
